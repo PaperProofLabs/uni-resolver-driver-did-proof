@@ -16,6 +16,16 @@
 
   <dependencies>
     <dependency>
+      <groupId>decentralized-identity</groupId>
+      <artifactId>uni-resolver-driver</artifactId>
+      <version>1.6-SNAPSHOT</version>
+    </dependency>
+    <dependency>
+      <groupId>decentralized-identity</groupId>
+      <artifactId>uni-resolver-core</artifactId>
+      <version>1.6-SNAPSHOT</version>
+    </dependency>
+    <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <version>4.13.2</version>

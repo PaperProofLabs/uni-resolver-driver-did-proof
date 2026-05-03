@@ -1,70 +1,115 @@
 package uniresolver.driver.did.proof;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import foundation.identity.did.DID;
+import foundation.identity.did.DIDDocument;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import uniresolver.DereferencingException;
+import uniresolver.ResolutionException;
+import uniresolver.driver.Driver;
+import uniresolver.result.DereferenceResult;
+import uniresolver.result.ResolveResult;
+
 import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.regex.Pattern;
 
-public class DidProofDriver {
+public class DidProofDriver implements Driver {
 
+    private static final Logger log = LoggerFactory.getLogger(DidProofDriver.class);
     private static final Pattern PROOF_DID_ID_PATTERN = Pattern.compile("^z[A-Za-z0-9]{20,}$");
     private static final String PROOF_METHOD = "proof";
+    private static final ObjectMapper objectMapper = new ObjectMapper();
 
-    // Default proof metadata
     private Map<String, Object> defaultProofMetadata = new HashMap<>();
 
     public DidProofDriver() {
         // Initialize with some default metadata if needed
     }
 
-    public ResolveResult resolve(String didString, Map<String, Object> resolutionOptions) throws ResolutionException {
+    @Override
+    public ResolveResult resolve(DID did, Map<String, Object> resolutionOptions) throws ResolutionException {
 
-        // Parse DID
-        if (!didString.startsWith("did:")) {
+        if (did == null) throw new NullPointerException("DID must not be null");
+        if (!PROOF_METHOD.equals(did.getMethodName())) {
             return null;
         }
 
-        // Remove query parameters if present
-        String didWithoutQuery = didString.split("\\?")[0];
-
-        String[] parts = didWithoutQuery.split(":");
-        if (parts.length < 3 || !PROOF_METHOD.equals(parts[1])) {
-            return null;
-        }
-
-        String methodSpecificId = parts[2];
-
-        // Validate DID ID format
-        if (!PROOF_DID_ID_PATTERN.matcher(methodSpecificId).matches()) {
+        String methodSpecificId = this.getMethodSpecificId(did);
+        if (methodSpecificId == null || !PROOF_DID_ID_PATTERN.matcher(methodSpecificId).matches()) {
             throw new ResolutionException(ResolutionException.ERROR_INVALID_DID,
-                "Invalid proof DID ID format: " + methodSpecificId);
+                    "Invalid proof DID ID format: " + methodSpecificId);
         }
 
-        // Parse query parameters for metadata
-        Map<String, Object> proofMetadata = parseQueryMetadata(didString);
+        String didString = did.getDidString();
+        if (resolutionOptions != null && resolutionOptions.get("didUrl") instanceof String) {
+            didString = (String) resolutionOptions.get("didUrl");
+        }
 
-        // Merge with default metadata
+        Map<String, Object> proofMetadata = this.parseQueryMetadata(didString);
         Map<String, Object> mergedMetadata = new HashMap<>(defaultProofMetadata);
         mergedMetadata.putAll(proofMetadata);
 
-        // Create DID document
-        Map<String, Object> didDocument = createProofDocument(didString, mergedMetadata);
+        DIDDocument didDocument = this.createProofDocument(didString, mergedMetadata);
 
-        // Build resolve result
-        ResolveResult resolveResult = new ResolveResult();
-        resolveResult.setDidDocument(didDocument);
-        Map<String, Object> resolutionMetadata = new HashMap<>();
+        ResolveResult resolveResult = ResolveResult.build();
+        Map<String, Object> resolutionMetadata = new LinkedHashMap<>();
         resolutionMetadata.put("contentType", "application/did+ld+json");
         resolveResult.setDidResolutionMetadata(resolutionMetadata);
-        resolveResult.setDidDocumentMetadata(buildDidDocumentMetadata(didString));
+        resolveResult.setDidDocument(didDocument);
+        resolveResult.setDidDocumentMetadata(this.buildDidDocumentMetadata(mergedMetadata));
 
         return resolveResult;
     }
 
-    private Map<String, Object> parseQueryMetadata(String didString) {
-        Map<String, Object> metadata = new HashMap<>();
+    @Override
+    public DereferenceResult dereference(foundation.identity.did.DIDURL didUrl, Map<String, Object> dereferenceOptions) throws DereferencingException, ResolutionException {
+        return null;
+    }
 
-        if (didString.contains("?")) {
+    @Override
+    public Map<String, Object> properties() throws ResolutionException {
+        Map<String, Object> properties = new LinkedHashMap<>();
+        properties.put("method", PROOF_METHOD);
+        properties.put("accept", "application/did+ld+json");
+        properties.put("supportsDereference", false);
+        properties.put("supportsOptions", false);
+        return properties;
+    }
+
+    @Override
+    public List<String> testIdentifiers() throws ResolutionException {
+        return Collections.singletonList("did:proof:z6MkfrQC9BjKJzKVh6eNkJQZmUZ6a4Qz8EJGwE7VzKdKjNQ");
+    }
+
+    @Override
+    public Map<String, Object> traits() throws ResolutionException {
+        Map<String, Object> traits = new LinkedHashMap<>();
+        traits.put("deactivatable", false);
+        traits.put("enumerable", false);
+        return traits;
+    }
+
+    public void setDefaultProofMetadata(Map<String, Object> defaultProofMetadata) {
+        this.defaultProofMetadata = defaultProofMetadata != null ? defaultProofMetadata : new HashMap<>();
+    }
+
+    private String getMethodSpecificId(DID did) {
+        try {
+            return did.getMethodSpecificId();
+        } catch (Throwable ignored) {
+            String didString = did.getDidString();
+            if (didString == null) return null;
+            String[] parts = didString.split(":");
+            return parts.length >= 3 ? parts[2] : null;
+        }
+    }
+
+    private Map<String, Object> parseQueryMetadata(String didString) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+
+        if (didString != null && didString.contains("?")) {
             String queryString = didString.substring(didString.indexOf("?") + 1);
             try {
                 String decodedQuery = URLDecoder.decode(queryString, "UTF-8");
@@ -75,13 +120,11 @@ public class DidProofDriver {
                         String[] keyValue = pair.split("=", 2);
                         String key = keyValue[0];
                         String value = keyValue[1];
-
-                        // Handle numeric fields
                         if ("storageEndEpoch".equals(key)) {
                             try {
                                 metadata.put(key, Long.parseLong(value));
                             } catch (NumberFormatException e) {
-                                // Ignore invalid numbers
+                                // ignore invalid numbers
                             }
                         } else {
                             metadata.put(key, value);
@@ -89,33 +132,30 @@ public class DidProofDriver {
                     }
                 }
             } catch (Exception e) {
-                // Ignore parsing errors
+                if (log.isDebugEnabled()) log.debug("Failed to parse query parameters for DID URL", e);
             }
         }
 
         return metadata;
     }
 
-    private Map<String, Object> buildDidDocumentMetadata(String didString) {
-        Map<String, Object> metadata = new HashMap<>();
-        Map<String, Object> queryMetadata = parseQueryMetadata(didString);
+    private Map<String, Object> buildDidDocumentMetadata(Map<String, Object> proofMetadata) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
 
-        // Copy relevant fields to document metadata
         String[] metadataFields = {
-            "versionId", "publicationState", "canonicalArtifactHash",
-            "canonicalArtifactHashAlgorithm", "canonicalArtifactLocator",
-            "storageProvider", "storageEndEpoch", "previousVersion",
-            "latestVersion"
+                "versionId", "publicationState", "canonicalArtifactHash",
+                "canonicalArtifactHashAlgorithm", "canonicalArtifactLocator",
+                "storageProvider", "storageEndEpoch", "previousVersion",
+                "latestVersion"
         };
 
         for (String field : metadataFields) {
-            if (queryMetadata.containsKey(field)) {
-                metadata.put(field, queryMetadata.get(field));
+            if (proofMetadata.containsKey(field)) {
+                metadata.put(field, proofMetadata.get(field));
             }
         }
 
-        // Handle deactivated field
-        String deactivated = (String) queryMetadata.get("deactivated");
+        Object deactivated = proofMetadata.get("deactivated");
         if ("true".equals(deactivated)) {
             metadata.put("deactivated", true);
         } else if ("false".equals(deactivated)) {
@@ -125,64 +165,29 @@ public class DidProofDriver {
         return metadata;
     }
 
-    private Map<String, Object> createProofDocument(String did, Map<String, Object> proofMetadata) {
-        Map<String, Object> document = new HashMap<>();
+    private DIDDocument createProofDocument(String didString, Map<String, Object> proofMetadata) {
+        Map<String, Object> document = new LinkedHashMap<>();
         document.put("@context", Arrays.asList(
-            "https://www.w3.org/ns/did/v1",
-            "https://w3id.org/proof/v1"
+                "https://www.w3.org/ns/did/v1",
+                "https://w3id.org/proof/v1"
         ));
-        document.put("id", did);
+        document.put("id", didString);
 
-        // Add proof metadata if present
         if (!proofMetadata.isEmpty()) {
             document.put("proofMetadata", proofMetadata);
         }
 
-        // Add service endpoint if canonicalArtifactLocator is present
-        String canonicalArtifactLocator = (String) proofMetadata.get("canonicalArtifactLocator");
-        if (canonicalArtifactLocator != null && !canonicalArtifactLocator.toString().isEmpty()) {
+        String canonicalArtifactLocator = proofMetadata.get("canonicalArtifactLocator") instanceof String ? (String) proofMetadata.get("canonicalArtifactLocator") : null;
+        if (canonicalArtifactLocator != null && !canonicalArtifactLocator.isEmpty()) {
             List<Map<String, Object>> services = new ArrayList<>();
-            Map<String, Object> service = new HashMap<>();
-            service.put("id", did + "#artifact");
+            Map<String, Object> service = new LinkedHashMap<>();
+            service.put("id", didString + "#artifact");
             service.put("type", "ArtifactRetrievalService");
             service.put("serviceEndpoint", canonicalArtifactLocator);
             services.add(service);
             document.put("service", services);
         }
 
-        return document;
-    }
-
-    public void setDefaultProofMetadata(Map<String, Object> defaultProofMetadata) {
-        this.defaultProofMetadata = defaultProofMetadata != null ? defaultProofMetadata : new HashMap<>();
-    }
-
-    // Simple result classes
-    public static class ResolveResult {
-        private Map<String, Object> didDocument;
-        private Map<String, Object> didResolutionMetadata = new HashMap<>();
-        private Map<String, Object> didDocumentMetadata = new HashMap<>();
-
-        public Map<String, Object> getDidDocument() { return didDocument; }
-        public void setDidDocument(Map<String, Object> didDocument) { this.didDocument = didDocument; }
-
-        public Map<String, Object> getDidResolutionMetadata() { return didResolutionMetadata; }
-        public void setDidResolutionMetadata(Map<String, Object> didResolutionMetadata) { this.didResolutionMetadata = didResolutionMetadata; }
-
-        public Map<String, Object> getDidDocumentMetadata() { return didDocumentMetadata; }
-        public void setDidDocumentMetadata(Map<String, Object> didDocumentMetadata) { this.didDocumentMetadata = didDocumentMetadata; }
-    }
-
-    public static class ResolutionException extends Exception {
-        public static final int ERROR_INVALID_DID = 1;
-
-        private final int errorCode;
-
-        public ResolutionException(int errorCode, String message) {
-            super(message);
-            this.errorCode = errorCode;
-        }
-
-        public int getErrorCode() { return errorCode; }
+        return objectMapper.convertValue(document, DIDDocument.class);
     }
 }
